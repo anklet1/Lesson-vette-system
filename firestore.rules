@@ -1,0 +1,229 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required)
+    //   - name: string (required)
+    //   - email: string (required, email format)
+    //   - role: string (required, ['teacher', 'headteacher', 'siso'])
+    //   - schoolId: string (optional)
+    //
+    // Collection: lessonNotes
+    // Document ID: {noteId}
+    // Fields:
+    //   - teacherId: string (required)
+    //   - teacherName: string (required)
+    //   - schoolId: string (required)
+    //   - subject: string (required)
+    //   - week: int (required)
+    //   - date: string (required, date format)
+    //   - content: string (optional)
+    //   - tlrs: string (optional)
+    //   - status: string (required, ['pending', 'vetted', 'rejected'])
+    //   - submittedAt: string (required, date-time format)
+    //   - isArchived: bool (required)
+    //   - fileUrl: string (required)
+    //   - fileName: string (required)
+    //   - fileType: string (required)
+    //   - tlrFileUrl: string (optional, null)
+    //   - tlrFileName: string (optional, null)
+    //   - tlrFileType: string (optional, null)
+    //   - vettedBy: string (optional)
+    //   - feedback: string (optional)
+    //
+    // ===============================================================
+
+    // Collection: schools
+    // Document ID: {schoolId}
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - district: string (required)
+    //   - createdAt: string (required)
+    //   - createdBy: string (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.teacherId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == "flekufelix@gmail.com" ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'siso')
+      );
+    }
+
+    function isValidSchoolId(schoolId) {
+      return schoolId == 'DISTRICT_OFFICE' || schoolId == 'SCH-001' || exists(/databases/$(database)/documents/schools/$(schoolId));
+    }
+
+    function isValidUser(data) {
+      return data.uid is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 500 &&
+             data.role in ['teacher', 'headteacher', 'siso'] &&
+             (
+               (data.role == 'siso' && data.get('schoolId', '') == 'DISTRICT_OFFICE') ||
+               (data.role != 'siso' && (data.get('schoolId', '') == '' || isValidSchoolId(data.get('schoolId', ''))))
+             );
+    }
+
+    function isValidSchool(data) {
+      return data.keys().hasAll(['id', 'name', 'district', 'createdAt', 'createdBy']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.name is string && data.name.size() > 0 &&
+             data.district is string && data.district.size() > 0 &&
+             data.createdAt is string &&
+             data.createdBy is string;
+    }
+
+    function isValidLessonNote(data) {
+      return data.keys().hasAll(['teacherId', 'teacherName', 'schoolId', 'subject', 'week', 'term', 'academicYear', 'date', 'status', 'submittedAt', 'isArchived', 'fileUrl', 'fileName', 'fileType']) &&
+             data.teacherId is string &&
+             data.teacherName is string && data.teacherName.size() > 0 &&
+             data.schoolId is string &&
+             data.subject is string && data.subject.size() > 0 &&
+             data.week is int &&
+             data.term is string &&
+             data.academicYear is string &&
+             data.date is string &&
+             data.status in ['pending', 'vetted', 'rejected'] &&
+             data.submittedAt is string &&
+             data.isArchived is bool &&
+             data.fileUrl is string && data.fileUrl.size() > 0 &&
+             data.fileName is string && data.fileName.size() > 0 &&
+             data.fileType is string &&
+             // Optional fields
+             (!('content' in data) || data.content is string) &&
+             (!('tlrs' in data) || data.tlrs is string) &&
+             (!('tlrFileUrl' in data) || data.tlrFileUrl == null || data.tlrFileUrl is string) &&
+             (!('tlrFileName' in data) || data.tlrFileName == null || data.tlrFileName is string) &&
+             (!('tlrFileType' in data) || data.tlrFileType == null || data.tlrFileType is string);
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'type', 'isRead', 'createdAt']) &&
+             data.userId is string &&
+             data.title is string && data.title.size() > 0 &&
+             data.message is string && data.message.size() > 0 &&
+             data.type in ['deadline', 'overdue', 'vetted', 'rejected', 'vetting_overdue'] &&
+             data.isRead is bool &&
+             data.createdAt is string;
+    }
+
+    function isValidTermSettings(data) {
+      return data.keys().hasAll(['currentTerm', 'academicYear', 'updatedAt', 'updatedBy']) &&
+             data.currentTerm is string &&
+             data.academicYear is string &&
+             data.updatedAt is string &&
+             data.updatedBy is string;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        isOwner(userId) || 
+        isAdmin() || 
+        (hasRole('headteacher') && get(/databases/$(database)/documents/users/$(userId)).data.schoolId == getUserData().schoolId)
+      );
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isAdmin() || (isOwner(userId) && isValidUser(request.resource.data));
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() && isValidTermSettings(request.resource.data);
+    }
+
+    match /lessonNotes/{noteId} {
+      allow get: if isAuthenticated() && (
+        isDocOwner() || 
+        isAdmin() ||
+        (hasRole('headteacher') && resource.data.schoolId == getUserData().schoolId)
+      );
+
+      allow list: if isAuthenticated() && (
+        (isDocOwner()) ||
+        (isAdmin()) ||
+        (hasRole('headteacher') && resource.data.schoolId == getUserData().schoolId)
+      );
+      
+      allow create: if isAuthenticated() && 
+                    (hasRole('teacher') || isAdmin()) && 
+                    request.resource.data.teacherId == request.auth.uid &&
+                    request.resource.data.schoolId == getUserData().schoolId &&
+                    isValidLessonNote(request.resource.data);
+      
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        // Teachers can update their own if pending
+        (isDocOwner() && resource.data.status == 'pending' && 
+         request.resource.data.teacherId == resource.data.teacherId &&
+         request.resource.data.schoolId == resource.data.schoolId &&
+         isValidLessonNote(request.resource.data)) ||
+        
+        // Teachers can archive/unarchive their own notes
+        (isDocOwner() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isArchived'])) ||
+        
+        // Headteachers and SISO can vet notes
+        ((isAdmin() || (hasRole('headteacher') && resource.data.schoolId == getUserData().schoolId)) && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'vettedBy', 'feedback', 'vettingHistory', 'vettedAt', 'vetterName', 'vetterRole']) &&
+         request.resource.data.status in ['vetted', 'rejected', 'pending'])
+      );
+      
+      allow delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid || 
+        isAdmin() || 
+        hasRole('headteacher')
+      ) && isValidNotification(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    match /test/connection {
+      allow read: if isAuthenticated();
+    }
+
+    match /schools/{schoolId} {
+      allow read: if request.auth != null;
+      allow create, update: if isAdmin() && isValidSchool(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}

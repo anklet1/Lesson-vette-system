@@ -1,0 +1,5 @@
+{
+  "name": "Lesson Note Submission & Vetting System",
+  "description": "A platform for teachers to submit lesson notes for head teacher review and vetting, with a dashboard for tracking submission metrics and SISO oversight.",
+  "requestFramePermissions": []
+}

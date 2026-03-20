@@ -1,0 +1,121 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information and role.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Full name of the user" },
+        "email": { "type": "string", "format": "email", "description": "Email address" },
+        "role": { "type": "string", "enum": ["teacher", "headteacher", "siso"], "description": "User role in the system" },
+        "schoolId": { "type": "string", "description": "Identifier for the school" }
+      },
+      "required": ["uid", "name", "email", "role"]
+    },
+    "LessonNote": {
+      "title": "Lesson Note",
+      "description": "A lesson note submitted by a teacher.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string", "description": "UID of the teacher" },
+        "teacherName": { "type": "string", "description": "Name of the teacher" },
+        "schoolId": { "type": "string", "description": "School identifier" },
+        "subject": { "type": "string", "description": "Subject of the lesson" },
+        "week": { "type": "integer", "description": "Week number" },
+        "term": { "type": "string", "description": "Term the note belongs to" },
+        "academicYear": { "type": "string", "description": "Academic year the note belongs to" },
+        "date": { "type": "string", "format": "date", "description": "Date of the lesson" },
+        "content": { "type": "string", "description": "Content of the lesson note" },
+        "tlrs": { "type": "string", "description": "TLR information" },
+        "status": { "type": "string", "enum": ["pending", "vetted", "rejected"], "description": "Current status of the note" },
+        "submittedAt": { "type": "string", "format": "date-time", "description": "Timestamp of submission" },
+        "isArchived": { "type": "boolean", "description": "Whether the note is archived" },
+        "fileUrl": { "type": "string", "description": "URL of the lesson note file" },
+        "fileName": { "type": "string", "description": "Name of the lesson note file" },
+        "fileType": { "type": "string", "description": "MIME type of the lesson note file" },
+        "tlrFileUrl": { "type": ["string", "null"], "description": "URL of the support file" },
+        "tlrFileName": { "type": ["string", "null"], "description": "Name of the support file" },
+        "tlrFileType": { "type": ["string", "null"], "description": "MIME type of the support file" },
+        "vettedBy": { "type": "string", "description": "UID of the headteacher who vetted it" },
+        "feedback": { "type": "string", "description": "Feedback from the headteacher" },
+        "vettingHistory": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": { "type": "string", "enum": ["vetted", "rejected"] },
+              "feedback": { "type": "string" },
+              "vettedBy": { "type": "string" },
+              "vettedByName": { "type": "string" },
+              "vettedAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      },
+      "required": ["teacherId", "teacherName", "schoolId", "subject", "week", "term", "academicYear", "date", "status", "submittedAt", "isArchived", "fileUrl", "fileName", "fileType"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "A notification for a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user" },
+        "title": { "type": "string", "description": "Title of the notification" },
+        "message": { "type": "string", "description": "Message of the notification" },
+        "type": { "type": "string", "enum": ["deadline", "overdue", "vetted", "rejected", "vetting_overdue"], "description": "Type of notification" },
+        "isRead": { "type": "boolean", "description": "Whether the notification is read" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of creation" },
+        "link": { "type": "string", "description": "Optional link to a resource" }
+      },
+      "required": ["userId", "title", "message", "type", "isRead", "createdAt"]
+    },
+    "School": {
+      "title": "School",
+      "description": "A registered school in the system.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique school code/ID" },
+        "name": { "type": "string", "description": "Full name of the school" },
+        "district": { "type": "string", "description": "District the school belongs to" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of registration" },
+        "createdBy": { "type": "string", "description": "UID of the SISO who registered the school" }
+      },
+      "required": ["id", "name", "district", "createdAt", "createdBy"]
+    },
+    "TermSettings": {
+      "title": "Term Settings",
+      "description": "Global settings for current term and academic year.",
+      "type": "object",
+      "properties": {
+        "currentTerm": { "type": "string", "description": "Current term (e.g., Term 1)" },
+        "academicYear": { "type": "string", "description": "Current academic year (e.g., 2025/2026)" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp of update" },
+        "updatedBy": { "type": "string", "description": "UID of the user who updated the settings" }
+      },
+      "required": ["currentTerm", "academicYear", "updatedAt", "updatedBy"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/lessonNotes/{noteId}": {
+      "schema": "LessonNote",
+      "description": "Submitted lesson notes"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User notifications"
+    },
+    "/schools/{schoolId}": {
+      "schema": "School",
+      "description": "Registered schools"
+    },
+    "/settings/{settingId}": {
+      "schema": "TermSettings",
+      "description": "System-wide settings"
+    }
+  }
+}
