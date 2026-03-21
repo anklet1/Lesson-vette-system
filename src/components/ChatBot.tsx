@@ -104,7 +104,7 @@ export const ChatBot: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ is
       <div className="p-4 bg-white border-t border-stone-100">
         <div className="relative">
           <input
-            value={input}
+            value={input || ''}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
             placeholder="Ask anything..."

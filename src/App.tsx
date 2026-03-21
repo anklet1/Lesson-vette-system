@@ -32,6 +32,11 @@ import {
   deleteDoc
 } from 'firebase/firestore';
 import { 
+  ref, 
+  uploadBytesResumable, 
+  getDownloadURL 
+} from 'firebase/storage';
+import { 
   LayoutDashboard, 
   FileText, 
   CheckCircle, 
@@ -82,7 +87,7 @@ import { pdfjs, Document, Page } from 'react-pdf';
 import * as docx from 'docx-preview';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
-import { auth, db } from './firebase';
+import { auth, db, storage } from './firebase';
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -193,7 +198,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     path
   };
   console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  // throw new Error(JSON.stringify(errInfo));
 }
 
 // --- Components ---
@@ -355,7 +360,7 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState<LessonNote[]>([]);
-  const [view, setView] = useState<'dashboard' | 'submit' | 'list' | 'vetting' | 'settings'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'submit' | 'list' | 'vetting' | 'settings' | 'users'>('dashboard');
   const [selectedNote, setSelectedNote] = useState<LessonNote | null>(null);
   const [previewFile, setPreviewFile] = useState<{ url: string, type: string, name: string } | null>(null);
   const [vettingStatus, setVettingStatus] = useState<'vetted' | 'rejected'>('vetted');
@@ -374,6 +379,8 @@ export default function App() {
   const [selectedNoteIds, setSelectedNoteIds] = useState<string[]>([]);
   const [mainFilePreview, setMainFilePreview] = useState<{ url: string; name: string; type: string } | null>(null);
   const [tlrFilePreview, setTlrFilePreview] = useState<{ url: string; name: string; type: string } | null>(null);
+  const [mainFile, setMainFile] = useState<File | null>(null);
+  const [tlrFile, setTlrFile] = useState<File | null>(null);
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [mainUploadProgress, setMainUploadProgress] = useState<number | null>(null);
   const [tlrUploadProgress, setTlrUploadProgress] = useState<number | null>(null);
@@ -491,6 +498,8 @@ export default function App() {
     let q;
     if (profile.role === 'headteacher') {
       q = query(collection(db, 'users'), where('schoolId', '==', profile.schoolId), where('role', '==', 'teacher'));
+    } else if (profile.role === 'siso') {
+      q = query(collection(db, 'users'), where('role', 'in', ['teacher', 'headteacher']));
     } else {
       q = query(collection(db, 'users'), where('role', '==', 'teacher'));
     }
@@ -630,9 +639,9 @@ export default function App() {
   const [loginSchoolId, setLoginSchoolId] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  const generateStaffEmail = (name: string, schoolId: string) => {
+  const generateStaffEmail = (name: string, emisCode: string) => {
     const cleanName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const cleanSchool = schoolId.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanSchool = emisCode.toLowerCase().replace(/[^a-z0-9]/g, '');
     return `${cleanName}.${cleanSchool}@eduvette.local`;
   };
 
@@ -657,9 +666,9 @@ export default function App() {
     } catch (error: any) {
       console.error('Staff login error:', error);
       if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
-        setLoginError('Account not found. Please check your name and school code, or register first.');
+        setLoginError('Account not found. Please check your name and EMIS code, or register first.');
       } else if (error.code === 'auth/wrong-password') {
-        setLoginError('Incorrect school code.');
+        setLoginError('Incorrect EMIS code.');
       } else {
         setLoginError('Login failed. Please try again.');
       }
@@ -672,24 +681,29 @@ export default function App() {
     const formData = new FormData(e.currentTarget as HTMLFormElement);
     const name = formData.get('name') as string;
     const role = formData.get('role') as UserRole;
-    const schoolId = formData.get('schoolId') as string;
+    const emisCode = formData.get('emisCode') as string;
 
-    // Validate schoolId
-    const school = schools.find(s => s.id === schoolId);
+    // Validate emisCode
+    const school = schools.find(s => s.id === emisCode);
     if (!school && role !== 'siso') {
-      setLoginError('Invalid school code. Contact Edubyte Africa Inc (0543521863) to get one.');
+      setLoginError('Invalid EMIS code. Contact Edubyte Africa Inc (0543521863) to get one.');
       return;
     }
 
-    const email = generateStaffEmail(name, schoolId);
+    if (emisCode.length < 6) {
+      setLoginError('EMIS code must be at least 6 characters long.');
+      return;
+    }
+
+    const email = generateStaffEmail(name, emisCode);
     try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, schoolId);
+      const userCredential = await createUserWithEmailAndPassword(auth, email, emisCode);
       const newProfile: UserProfile = {
         uid: userCredential.user.uid,
         name,
-        email: '', 
+        email: email, 
         role,
-        schoolId: role === 'siso' ? 'DISTRICT_OFFICE' : schoolId,
+        schoolId: role === 'siso' ? 'DISTRICT_OFFICE' : emisCode,
       };
       await setDoc(doc(db, 'users', userCredential.user.uid), newProfile);
       setProfile(newProfile);
@@ -698,7 +712,7 @@ export default function App() {
     } catch (error: any) {
       console.error('Staff registration error:', error);
       if (error.code === 'auth/email-already-in-use') {
-        setLoginError('An account with this name and school code already exists.');
+        setLoginError('An account with this name and EMIS code already exists.');
       } else {
         setLoginError('Registration failed. Please try again.');
       }
@@ -742,86 +756,115 @@ export default function App() {
       return;
     }
 
-    const setProgress = type === 'main' ? setMainUploadProgress : setTlrUploadProgress;
-    setProgress(0);
+    const preview = {
+      url: URL.createObjectURL(file),
+      name: file.name,
+      type: file.type
+    };
 
-    const reader = new FileReader();
+    if (type === 'main') {
+      setMainFile(file);
+      setMainFilePreview(preview);
+    } else {
+      setTlrFile(file);
+      setTlrFilePreview(preview);
+    }
     
-    reader.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const progress = Math.round((event.loaded / event.total) * 100);
-        setProgress(progress);
-      }
-    };
-
-    reader.onload = (event) => {
-      const preview = {
-        url: event.target?.result as string,
-        name: file.name,
-        type: file.type
-      };
-      
-      // Simulate a small delay for the "processing" feel
-      setTimeout(() => {
-        if (type === 'main') setMainFilePreview(preview);
-        else setTlrFilePreview(preview);
-        setProgress(null);
-        addToast(`${file.name} uploaded successfully!`);
-      }, 800);
-    };
-
-    reader.onerror = () => {
-      setProgress(null);
-      addToast("Error reading file.", "error");
-    };
-
-    reader.readAsDataURL(file);
+    addToast(`${file.name} selected successfully!`);
   };
 
   const submitNote = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!profile) return;
     
-    if (!mainFilePreview) {
+    if (!mainFile) {
       alert("Please upload the lesson note file.");
       return;
     }
 
     setIsUploading(true);
 
-    const formData = new FormData(e.currentTarget);
-    
-    const noteData = {
-      teacherId: profile.uid,
-      teacherName: profile.name,
-      schoolId: profile.schoolId,
-      subject: formData.get('subject') as string,
-      week: parseInt(formData.get('week') as string),
-      term: termSettings?.currentTerm || 'Term 1',
-      academicYear: termSettings?.academicYear || '2023/2024',
-      date: formData.get('date') as string,
-      content: formData.get('content') as string || '',
-      tlrs: formData.get('tlrs') as string || '',
-      status: 'pending',
-      submittedAt: new Date().toISOString(),
-      isArchived: false,
-      fileUrl: mainFilePreview.url,
-      fileName: mainFilePreview.name,
-      fileType: mainFilePreview.type,
-      tlrFileUrl: tlrFilePreview?.url || null,
-      tlrFileName: tlrFilePreview?.name || null,
-      tlrFileType: tlrFilePreview?.type || null,
-    };
-
     try {
+      // 1. Upload Main File
+      setMainUploadProgress(0);
+      const mainRef = ref(storage, `lesson-notes/${Date.now()}-${mainFile.name}`);
+      const mainUploadTask = uploadBytesResumable(mainRef, mainFile);
+      
+      const mainUrl = await new Promise<string>((resolve, reject) => {
+        mainUploadTask.on('state_changed', 
+          (snapshot) => {
+            setMainUploadProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+          },
+          reject,
+          () => getDownloadURL(mainUploadTask.snapshot.ref).then(resolve)
+        );
+      });
+      setMainUploadProgress(null);
+
+      // 2. Upload TLR File if exists
+      let tlrUrl = null;
+      if (tlrFile) {
+        setTlrUploadProgress(0);
+        const tlrRef = ref(storage, `tlrs/${Date.now()}-${tlrFile.name}`);
+        const tlrUploadTask = uploadBytesResumable(tlrRef, tlrFile);
+        
+        tlrUrl = await new Promise<string>((resolve, reject) => {
+          tlrUploadTask.on('state_changed', 
+            (snapshot) => {
+              setTlrUploadProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
+            },
+            reject,
+            () => getDownloadURL(tlrUploadTask.snapshot.ref).then(resolve)
+          );
+        });
+        setTlrUploadProgress(null);
+      }
+
+      const formData = new FormData(e.currentTarget);
+      const noteData = {
+        teacherId: profile.uid,
+        teacherName: profile.name,
+        schoolId: profile.schoolId,
+        subject: formData.get('subject') as string,
+        week: parseInt(formData.get('week') as string),
+        term: termSettings?.currentTerm || 'Term 1',
+        academicYear: termSettings?.academicYear || '2023/2024',
+        date: formData.get('date') as string,
+        content: formData.get('content') as string || '',
+        tlrs: formData.get('tlrs') as string || '',
+        status: 'pending',
+        submittedAt: new Date().toISOString(),
+        isArchived: false,
+        fileUrl: mainUrl,
+        fileName: mainFile.name,
+        fileType: mainFile.type,
+        tlrFileUrl: tlrUrl,
+        tlrFileName: tlrFile?.name || null,
+        tlrFileType: tlrFile?.type || null,
+      };
+
       await addDoc(collection(db, 'lessonNotes'), noteData);
+      setMainFile(null);
       setMainFilePreview(null);
+      setTlrFile(null);
       setTlrFilePreview(null);
       setView('list');
+      addToast("Lesson note submitted successfully!");
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'lessonNotes');
+      setMainUploadProgress(null);
+      setTlrUploadProgress(null);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const updateUserRole = async (userId: string, newRole: UserRole) => {
+    try {
+      await updateDoc(doc(db, 'users', userId), { role: newRole });
+      addToast(`User role updated to ${newRole}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
     }
   };
 
@@ -1077,7 +1120,14 @@ export default function App() {
         acc[note.schoolId].total++;
         return acc;
       }, {} as Record<string, { total: number }>)
-    ).map(([school, stats]) => ({ school, ...stats })) : [];
+    ).map(([schoolId, stats]) => {
+      const school = schools.find(s => s.id === schoolId);
+      return { 
+        school: school?.name || schoolId, 
+        emisCode: schoolId,
+        ...stats 
+      };
+    }) : [];
 
     const recentFeedback = profile.role === 'teacher' 
       ? notes.filter(n => n.feedback && n.status !== 'pending').slice(0, 5)
@@ -1196,7 +1246,7 @@ export default function App() {
                 <div>
                   <label className="block text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2 ml-1">Login As</label>
                   <select 
-                    value={loginRole}
+                    value={loginRole || 'teacher'}
                     onChange={(e) => setLoginRole(e.target.value as UserRole)}
                     required
                     className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-2xl text-white focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 transition-all outline-none appearance-none"
@@ -1211,21 +1261,21 @@ export default function App() {
                   <input 
                     type="text"
                     required
-                    value={loginName}
+                    value={loginName || ''}
                     onChange={(e) => setLoginName(e.target.value)}
                     className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-stone-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 transition-all outline-none"
                     placeholder="Enter your registered name"
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2 ml-1">School Code</label>
+                  <label className="block text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2 ml-1">EMIS Code</label>
                   <input 
                     type="text"
                     required
-                    value={loginSchoolId}
+                    value={loginSchoolId || ''}
                     onChange={(e) => setLoginSchoolId(e.target.value)}
                     className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-stone-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 transition-all outline-none"
-                    placeholder="Enter school code"
+                    placeholder="Enter EMIS code"
                   />
                 </div>
                 {loginError && (
@@ -1266,13 +1316,13 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2 ml-1">School Code</label>
+                  <label className="block text-[10px] font-bold text-stone-500 uppercase tracking-widest mb-2 ml-1">EMIS Code</label>
                   <input 
-                    name="schoolId"
+                    name="emisCode"
                     type="text"
                     required
                     className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-stone-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 transition-all outline-none"
-                    placeholder="Enter unique school code"
+                    placeholder="Enter unique EMIS code"
                   />
                 </div>
                 {loginError && (
@@ -1336,14 +1386,14 @@ export default function App() {
             e.preventDefault();
             const formData = new FormData(e.currentTarget);
             const role = formData.get('role') as UserRole;
-            const schoolId = formData.get('schoolId') as string;
+            const emisCode = formData.get('emisCode') as string;
             const name = formData.get('name') as string;
 
-            // Validate schoolId
-            const school = schools.find(s => s.id === schoolId);
+            // Validate emisCode
+            const school = schools.find(s => s.id === emisCode);
             if (!school && role !== 'siso') {
-              setSchoolCodeError('Invalid school code. Please contact Edubyte Africa Inc (0543521863 - Call/WhatsApp) to make payment and obtain a valid license code.');
-              addToast('Invalid school code.', 'error');
+              setSchoolCodeError('Invalid EMIS code. Please contact Edubyte Africa Inc (0543521863 - Call/WhatsApp) to make payment and obtain a valid license code.');
+              addToast('Invalid EMIS code.', 'error');
               return;
             }
             setSchoolCodeError(null);
@@ -1354,7 +1404,7 @@ export default function App() {
                 name: name || user.displayName || 'Anonymous',
                 email: user.email || '',
                 role,
-                schoolId: role === 'siso' ? 'DISTRICT_OFFICE' : schoolId,
+                schoolId: role === 'siso' ? 'DISTRICT_OFFICE' : emisCode,
               };
               await setDoc(doc(db, 'users', user.uid), newProfile);
               setProfile(newProfile);
@@ -1391,13 +1441,13 @@ export default function App() {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider mb-1.5">School Code</label>
+              <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider mb-1.5">EMIS Code</label>
               <input 
-                name="schoolId"
+                name="emisCode"
                 type="text" 
                 required
                 className={`w-full px-4 py-3 rounded-xl border ${schoolCodeError ? 'border-red-500 focus:ring-red-500' : 'border-stone-200 focus:ring-emerald-500'} focus:ring-2 focus:border-transparent transition-all outline-none`}
-                placeholder="Enter unique school code"
+                placeholder="Enter unique EMIS code"
                 onChange={() => setSchoolCodeError(null)}
               />
               {schoolCodeError ? (
@@ -1407,7 +1457,7 @@ export default function App() {
                 </p>
               ) : (
                 <p className="mt-1.5 text-[10px] text-stone-400 italic">
-                  Contact Edubyte Africa Inc (0543521863) to make payment and get your school code.
+                  Contact Edubyte Africa Inc (0543521863) to make payment and get your EMIS code.
                 </p>
               )}
             </div>
@@ -1486,7 +1536,17 @@ export default function App() {
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${showSchoolManagement ? 'bg-emerald-50 text-emerald-600 font-semibold' : 'text-stone-500 hover:bg-stone-50'}`}
                   >
                     <School className="w-5 h-5" />
-                    School Codes
+                    EMIS Codes
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setView('users');
+                      setShowSchoolManagement(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${view === 'users' ? 'bg-emerald-50 text-emerald-600 font-semibold' : 'text-stone-500 hover:bg-stone-50'}`}
+                  >
+                    <UserIcon className="w-5 h-5" />
+                    User Management
                   </button>
                 </>
               )}
@@ -1966,7 +2026,7 @@ export default function App() {
                             </div>
                             <div>
                               <p className="font-bold text-stone-900">{school.school}</p>
-                              <p className="text-xs text-stone-400">District Oversight</p>
+                              <p className="text-[10px] text-stone-400 font-mono uppercase tracking-widest">EMIS: {school.emisCode}</p>
                             </div>
                           </div>
                           <div className="flex items-center justify-between pt-4 border-t border-stone-200">
@@ -2050,6 +2110,79 @@ export default function App() {
             </div>
           )}
 
+          {view === 'users' && profile.role === 'siso' && (
+            <div className="max-w-6xl bg-white p-10 rounded-3xl shadow-sm border border-stone-200">
+              <div className="flex items-center gap-4 mb-8">
+                <div className="w-12 h-12 bg-emerald-100 rounded-2xl flex items-center justify-center text-emerald-600">
+                  <UserIcon className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-stone-900">User Management</h3>
+                  <p className="text-stone-500 text-sm">Manage roles and permissions for teachers and headteachers.</p>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-stone-100">
+                      <th className="py-4 px-6 text-[10px] font-bold text-stone-400 uppercase tracking-widest">Name</th>
+                      <th className="py-4 px-6 text-[10px] font-bold text-stone-400 uppercase tracking-widest">Email</th>
+                      <th className="py-4 px-6 text-[10px] font-bold text-stone-400 uppercase tracking-widest">School</th>
+                      <th className="py-4 px-6 text-[10px] font-bold text-stone-400 uppercase tracking-widest">Current Role</th>
+                      <th className="py-4 px-6 text-[10px] font-bold text-stone-400 uppercase tracking-widest text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {teachers.map((u) => (
+                      <tr key={u.uid} className="border-b border-stone-50 hover:bg-stone-50/50 transition-all group">
+                        <td className="py-4 px-6">
+                          <p className="font-bold text-stone-900">{u.name}</p>
+                        </td>
+                        <td className="py-4 px-6">
+                          <p className="text-sm text-stone-500">{u.email}</p>
+                        </td>
+                        <td className="py-4 px-6">
+                          <p className="text-sm text-stone-700 font-medium">
+                            {schools.find(s => s.id === u.schoolId)?.name || u.schoolId}
+                          </p>
+                          <p className="text-[10px] text-stone-400 font-mono">EMIS: {u.schoolId}</p>
+                        </td>
+                        <td className="py-4 px-6">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                            u.role === 'headteacher' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {u.role}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-right">
+                          <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
+                            {u.role === 'teacher' && (
+                              <button 
+                                onClick={() => updateUserRole(u.uid, 'headteacher')}
+                                className="px-3 py-1.5 bg-indigo-500 text-white text-[10px] font-bold rounded-lg hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-500/20"
+                              >
+                                Promote to Headteacher
+                              </button>
+                            )}
+                            {u.role === 'headteacher' && (
+                              <button 
+                                onClick={() => updateUserRole(u.uid, 'teacher')}
+                                className="px-3 py-1.5 bg-stone-500 text-white text-[10px] font-bold rounded-lg hover:bg-stone-600 transition-all"
+                              >
+                                Demote to Teacher
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {view === 'submit' && (
             <div className="max-w-3xl bg-white p-10 rounded-3xl border border-stone-200 shadow-sm">
               <form onSubmit={submitNote} className="space-y-6">
@@ -2128,7 +2261,7 @@ export default function App() {
                       <div className="mt-4 p-4 bg-stone-50 rounded-2xl border border-stone-200">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">File Preview</span>
-                          <button type="button" onClick={() => setMainFilePreview(null)} className="text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-all">
+                          <button type="button" onClick={() => { setMainFilePreview(null); setMainFile(null); }} className="text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-all">
                             <XCircle className="w-4 h-4" />
                           </button>
                         </div>
@@ -2201,7 +2334,7 @@ export default function App() {
                         <div className="mt-2 p-3 bg-stone-50 rounded-xl border border-stone-200">
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">TLR Preview</span>
-                            <button type="button" onClick={() => setTlrFilePreview(null)} className="text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-all">
+                            <button type="button" onClick={() => { setTlrFilePreview(null); setTlrFile(null); }} className="text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-all">
                               <XCircle className="w-4 h-4" />
                             </button>
                           </div>
@@ -2300,7 +2433,7 @@ export default function App() {
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
                     <input 
                       placeholder="Search by subject, teacher, or school..."
-                      value={searchTerm}
+                      value={searchTerm || ''}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="w-full pl-11 pr-4 py-2.5 rounded-xl bg-stone-50 border-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                     />
@@ -2337,7 +2470,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">Subject</label>
                       <select 
-                        value={subjectFilter}
+                        value={subjectFilter || 'all'}
                         onChange={(e) => setSubjectFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       >
@@ -2348,7 +2481,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">Week</label>
                       <select 
-                        value={weekFilter}
+                        value={weekFilter || 'all'}
                         onChange={(e) => setWeekFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       >
@@ -2359,7 +2492,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">Term</label>
                       <select 
-                        value={termFilter}
+                        value={termFilter || 'all'}
                         onChange={(e) => setTermFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       >
@@ -2370,7 +2503,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">Year</label>
                       <select 
-                        value={yearFilter}
+                        value={yearFilter || 'all'}
                         onChange={(e) => setYearFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       >
@@ -2382,7 +2515,7 @@ export default function App() {
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">From Date</label>
                       <input 
                         type="date"
-                        value={startDateFilter}
+                        value={startDateFilter || ''}
                         onChange={(e) => setStartDateFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       />
@@ -2391,7 +2524,7 @@ export default function App() {
                       <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400 ml-1">To Date</label>
                       <input 
                         type="date"
-                        value={endDateFilter}
+                        value={endDateFilter || ''}
                         onChange={(e) => setEndDateFilter(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl bg-stone-50 border-none text-sm focus:ring-2 focus:ring-emerald-500/20"
                       />
@@ -2458,10 +2591,13 @@ export default function App() {
                       </td>
                       <td className="px-8 py-6">
                         <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 bg-stone-100 rounded-full flex items-center justify-center text-[10px] font-bold text-stone-500">
+                          <div className="w-6 h-6 bg-stone-100 rounded-full flex items-center justify-center text-[10px] font-bold text-stone-50">
                             {note.teacherName.charAt(0)}
                           </div>
-                          <span className="text-sm text-stone-600">{note.teacherName}</span>
+                          <div>
+                            <p className="text-sm font-bold text-stone-900">{note.teacherName}</p>
+                            <p className="text-[10px] text-stone-400 font-mono">EMIS: {note.schoolId}</p>
+                          </div>
                         </div>
                       </td>
                       <td className="px-8 py-6 text-sm text-stone-600">Week {note.week}</td>
@@ -2694,7 +2830,7 @@ export default function App() {
                       <div className="space-y-2">
                         <label className="text-xs font-bold text-stone-400 uppercase tracking-widest">Select Status</label>
                         <select
-                          value={vettingStatus}
+                          value={vettingStatus || 'vetted'}
                           onChange={(e) => setVettingStatus(e.target.value as 'vetted' | 'rejected')}
                           className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all bg-white"
                         >
@@ -2776,8 +2912,8 @@ export default function App() {
             <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
               <div className="p-8 border-b border-stone-100 flex items-center justify-between bg-stone-50/50">
                 <div>
-                  <h3 className="text-2xl font-bold text-stone-900 tracking-tight">School Registration</h3>
-                  <p className="text-stone-500 text-sm">Manage unique school codes and registration.</p>
+                  <h3 className="text-2xl font-bold text-stone-900 tracking-tight">EMIS Registration</h3>
+                  <p className="text-stone-500 text-sm">Manage unique EMIS codes and school registration.</p>
                 </div>
                 <button 
                   onClick={() => setShowSchoolManagement(false)}
@@ -2798,7 +2934,7 @@ export default function App() {
                   const district = formData.get('district') as string;
 
                   if (schools.some(s => s.id === id)) {
-                    addToast('School code already exists.', 'error');
+                    addToast('EMIS code already exists.', 'error');
                     setIsRegisteringSchool(false);
                     return;
                   }
@@ -2822,16 +2958,16 @@ export default function App() {
                   }
                 }} className="grid grid-cols-2 gap-4 mb-8 p-6 bg-emerald-50/50 rounded-2xl border border-emerald-100">
                   <div className="col-span-2">
-                    <h4 className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-4">Register New School</h4>
+                    <h4 className="text-xs font-bold text-emerald-600 uppercase tracking-widest mb-4">Register New School (EMIS)</h4>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-stone-400 uppercase tracking-widest mb-1.5 ml-1">School Code</label>
+                    <label className="block text-[10px] font-bold text-stone-400 uppercase tracking-widest mb-1.5 ml-1">EMIS Code</label>
                     <input 
-                      name="schoolId"
+                      name="emisCode"
                       type="text" 
                       required
                       className="w-full px-4 py-3 rounded-xl border border-stone-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all outline-none text-sm"
-                      placeholder="e.g. SCH-001"
+                      placeholder="e.g. EMIS-12345"
                     />
                   </div>
                   <div>
@@ -2867,7 +3003,7 @@ export default function App() {
                 </form>
 
                 <div className="space-y-3">
-                  <h4 className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-4 ml-1">Existing Schools ({schools.length})</h4>
+                  <h4 className="text-xs font-bold text-stone-400 uppercase tracking-widest mb-4 ml-1">Registered Schools ({schools.length})</h4>
                   {schools.length === 0 ? (
                     <div className="text-center py-10 bg-stone-50 rounded-2xl border border-dashed border-stone-200">
                       <School className="w-10 h-10 text-stone-200 mx-auto mb-2" />
@@ -2882,7 +3018,7 @@ export default function App() {
                           </div>
                           <div>
                             <p className="font-bold text-stone-900">{s.name}</p>
-                            <p className="text-xs text-stone-400">{s.district} • Code: <span className="font-mono text-emerald-600">{s.id}</span></p>
+                            <p className="text-xs text-stone-400">{s.district} • EMIS: <span className="font-mono text-emerald-600">{s.id}</span></p>
                           </div>
                         </div>
                         <button 
